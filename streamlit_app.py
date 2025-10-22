@@ -1,120 +1,100 @@
-import streamlit as st
 import cv2
-import numpy as np
-import json
+import streamlit as st
 import time
-from pathlib import Path
-from app.db import init_db, insert_persona, get_all_personas, insert_deteccion
-from app.utils import obtener_embedding, embedding_a_json, es_duplicado, distancia_coseno
+import json
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import sqlite3
 from deepface import DeepFace
 
-st.set_page_config(page_title="Reconocimiento facial y emociones", layout="wide")
+# Importar utilidades y DB
+from app.db import init_db, insert_persona, get_all_personas, insert_deteccion
+from app.utils import detectar_rostro, obtener_embedding, embedding_a_json, distancia_coseno
+
+st.set_page_config(page_title="Sistema de Reconocimiento Facial", layout="wide")
+st.title("🧠 Sistema de Reconocimiento Facial con Emociones")
+
+# Inicializar DB
 init_db()
 
-def abrir_camara():
+# Sidebar de navegación
+opcion = st.sidebar.radio("Menú", ["Registro", "Reconocimiento", "Reportes"])
+
+# ---------------------------
+# 1. REGISTRO
+# ---------------------------
+if opcion == "Registro":
+    st.header("📌 Registro de Persona")
+
+    nombre = st.text_input("Nombre")
+    apellido = st.text_input("Apellido")
+    email = st.text_input("Email")
+
+    # Captura con cámara integrada de Streamlit
+    img_file = st.camera_input("📸 Toma tu foto para el registro")
+
+    if img_file is not None and st.button("✅ Confirmar Registro", key="confirmar_registro"):
+        file_bytes = np.asarray(bytearray(img_file.read()), dtype=np.uint8)
+        frame = cv2.imdecode(file_bytes, 1)
+
+        # Detectar rostro y dibujar rectángulo
+        rostro = detectar_rostro(frame)
+        if rostro is None:
+            st.error("⚠️ No se detectó rostro en la imagen capturada.")
+        else:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+            faces = face_cascade.detectMultiScale(gray, 1.1, 5)
+            for (x, y, w, h) in faces:
+                cv2.rectangle(frame, (x, y), (x+w, y+h), (255, 0, 0), 2)
+
+            st.image(frame, channels="BGR", caption="Foto con detección de rostro")
+
+            try:
+                emb_vec = obtener_embedding(rostro)
+                emb_json = embedding_a_json(emb_vec)
+                persona_id = insert_persona(nombre, apellido, email, emb_json)
+                st.success(f"🎉 Persona registrada con ID {persona_id}")
+            except sqlite3.IntegrityError:
+                st.error("⚠️ Ya existe una persona registrada con ese email.")
+
+# ---------------------------
+# 2. RECONOCIMIENTO (streaming simulado)
+# ---------------------------
+elif opcion == "Reconocimiento":
+    st.header("🎥 Reconocimiento en Tiempo Real")
+
+    frame_placeholder = st.empty()
+
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
-        st.error("No se puede acceder a la cámara")
-        return None
-    return cap
+        st.error("No se pudo acceder a la cámara.")
+    else:
+        personas = get_all_personas()
+        ids = [p[0] for p in personas]
+        nombres = [f"{p[1]} {p[2]}" for p in personas]
+        embeddings = [np.array(json.loads(p[4]), dtype=np.float32) for p in personas]
 
-def frame_a_stimage(frame):
-    # BGR -> RGB
-    return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-# --------------------- Pantalla Registro --------------------- #
-def pantalla_registro():
-    st.header("Registro de personas")
-    with st.form("form_registro"):
-        nombre = st.text_input("Nombre")
-        apellido = st.text_input("Apellido")
-        email = st.text_input("Email")
-        capturar = st.form_submit_button("Capturar y registrar")
-
-    vista = st.empty()
-    if capturar:
-        cap = abrir_camara()
-        if cap is None:
-            return
-        st.info("Mostrando cámara. Presiona el botón 'Capturar' debajo del video.")
-        boton_captura = st.button("Capturar imagen")
-        frame_guardado = None
-
-        while True:
+        # Loop de streaming simulado
+        for _ in range(200):  # muestra ~20 segundos (200 * 0.1s)
             ret, frame = cap.read()
             if not ret:
-                st.error("Error en la cámara.")
-                break
-            vista.image(frame_a_stimage(frame), channels="RGB", use_column_width=True)
-            if boton_captura:
-                frame_guardado = frame.copy()
-                break
-            # salir si el usuario cambia de página
-            if st.session_state.get("salir_registro", False):
                 break
 
-        cap.release()
-
-        if frame_guardado is not None:
-            st.success("Imagen capturada. Generando embedding...")
-            try:
-                emb_vec = obtener_embedding(frame_guardado)
-            except Exception as e:
-                st.error(f"No se pudo generar el embedding: {e}")
-                return
-
-            personas = get_all_personas()
-            embeddings_existentes = [p[4] for p in personas]
-            if es_duplicado(emb_vec, embeddings_existentes):
-                st.warning("Registro rechazado: rostro ya existe en la base de datos.")
-                return
-
-            persona_id = insert_persona(nombre, apellido, email, embedding_a_json(emb_vec))
-            st.success(f"Registro exitoso. ID persona: {persona_id}")
-            st.image(frame_a_stimage(frame_guardado), caption="Rostro registrado", channels="RGB")
-
-# --------------------- Pantalla Detección --------------------- #
-def pantalla_deteccion():
-    st.header("Detección en tiempo real")
-    umbral = st.slider("Umbral de coincidencia (menor es más estricto)", 0.20, 0.60, 0.35, 0.01)
-    iniciar = st.button("Iniciar detección")
-    detener = st.button("Detener")
-
-    personas = get_all_personas()
-    ids = [p[0] for p in personas]
-    nombres = [f"{p[1]} {p[2]}" for p in personas]
-    embeddings = [np.array(json.loads(p[4]), dtype=np.float32) for p in personas]
-
-    vista = st.empty()
-    info = st.empty()
-
-    if iniciar:
-        cap = abrir_camara()
-        if cap is None:
-            return
-
-        while True:
-            if detener:
-                break
-            ret, frame = cap.read()
-            if not ret:
-                st.error("Error en la cámara.")
-                break
-
-            # Emoción
-            try:
-                analisis = DeepFace.analyze(frame, actions=['emotion'], enforce_detection=False)
-                emocion = analisis[0]['dominant_emotion']
-                confianza_emocion = float(analisis[0]['emotion'][emocion])
-            except Exception:
-                emocion = "Desconocida"
-                confianza_emocion = 0.0
-
-            # Identidad
-            try:
-                emb_vec = obtener_embedding(frame)
-            except Exception:
-                emb_vec = None
+            rostro = detectar_rostro(frame)
+            emb_vec = None
+            if rostro is not None:
+                try:
+                    emb_vec = obtener_embedding(rostro)
+                    # Dibujar rectángulo
+                    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                    face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+                    faces = face_cascade.detectMultiScale(gray, 1.1, 5)
+                    for (x, y, w, h) in faces:
+                        cv2.rectangle(frame, (x, y), (x+w, y+h), (255, 0, 0), 2)
+                except Exception as e:
+                    st.warning(f"Error embedding: {e}")
 
             nombre = "No registrado"
             persona_id = None
@@ -127,96 +107,65 @@ def pantalla_deteccion():
                     if dist < mejor_dist:
                         mejor_dist = dist
                         mejor_idx = i
-                if mejor_idx != -1 and mejor_dist < umbral:
+                if mejor_idx != -1 and mejor_dist < 0.35:
                     persona_id = ids[mejor_idx]
                     nombre = nombres[mejor_idx]
 
-            # Overlay texto
-            texto = f"{nombre} | {emocion} ({confianza_emocion:.1f}%)"
-            cv2.putText(frame, texto, (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2, cv2.LINE_AA)
+            try:
+                analisis = DeepFace.analyze(frame, actions=['emotion'], enforce_detection=False)
+                emocion = analisis[0]['dominant_emotion']
+                confianza = analisis[0]['emotion'][emocion]
+            except Exception:
+                emocion = "Desconocida"
+                confianza = 0.0
 
-            vista.image(frame_a_stimage(frame), channels="RGB", use_column_width=True)
-            info.markdown(f"**Nombre:** {nombre}  |  **Emoción:** {emocion}  |  **Confianza:** {confianza_emocion:.1f}%  |  **Hora:** {time.strftime('%H:%M:%S')}")
-
-            # Guardar detección si es conocida
             if persona_id:
-                insert_deteccion(persona_id, emocion, confianza_emocion)
+                insert_deteccion(persona_id, emocion, float(confianza))
+
+            texto = f"{nombre} | {emocion} ({confianza:.1f}%)"
+            cv2.putText(frame, texto, (20, 40), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.8, (0, 255, 0), 2, cv2.LINE_AA)
+
+            frame_placeholder.image(frame, channels="BGR")
+            time.sleep(0.1)
 
         cap.release()
-        st.info("Detección detenida.")
 
-# --------------------- Pantalla Reportes --------------------- #
-def pantalla_reportes():
-    import pandas as pd
-    import sqlite3
-    import seaborn as sns
-    import matplotlib.pyplot as plt
+# ---------------------------
+# 3. REPORTES
+# ---------------------------
+elif opcion == "Reportes":
+    st.header("📊 Reportes de Detecciones")
 
-    st.header("Reportes y estadísticas")
+    conn = sqlite3.connect("app_data.db", check_same_thread=False)
+    df_personas = pd.read_sql_query("SELECT * FROM personas;", conn)
+    df_det = pd.read_sql_query("SELECT * FROM detecciones;", conn)
 
-    db_path = Path("app_data.db")
-    if not db_path.exists():
-        st.warning("No hay base de datos aún.")
-        return
-
-    conn = sqlite3.connect(db_path)
-    df_personas = pd.read_sql_query("SELECT id, nombre, apellido, email FROM personas", conn)
-    df_det = pd.read_sql_query("SELECT persona_id, emocion, confianza, timestamp FROM detecciones", conn)
-    conn.close()
-
-    if df_det.empty:
-        st.info("Aún no hay detecciones registradas.")
-        return
-
-    # Selector de persona
-    opciones = {f"{r['nombre']} {r['apellido']} ({r['email']})": r['id'] for _, r in df_personas.iterrows()}
-    seleccion = st.selectbox("Persona", options=list(opciones.keys()))
-    persona_id = opciones[seleccion]
-
-    df_p = df_det[df_det['persona_id'] == persona_id]
-    st.subheader("Historial de detecciones")
-    st.dataframe(df_p.sort_values("timestamp", ascending=False), use_container_width=True)
-
-    # Conteo por emoción
-    st.subheader("Emociones por persona")
-    conteo = df_p['emocion'].value_counts().rename_axis('emocion').reset_index(name='conteo')
-    col1, col2 = st.columns(2)
-
-    with col1:
-        fig, ax = plt.subplots(figsize=(5,3))
-        sns.barplot(data=conteo, x='emocion', y='conteo', ax=ax)
-        ax.set_xlabel("Emoción")
-        ax.set_ylabel("Conteo")
-        ax.set_title("Conteo de emociones")
-        plt.tight_layout()
-        st.pyplot(fig)
-
-    with col2:
-        prom = df_p.groupby('emocion')['confianza'].mean().reset_index()
-        fig2, ax2 = plt.subplots(figsize=(5,3))
-        sns.barplot(data=prom, x='emocion', y='confianza', ax=ax2)
-        ax2.set_xlabel("Emoción")
-        ax2.set_ylabel("Confianza promedio")
-        ax2.set_title("Confianza promedio por emoción")
-        plt.tight_layout()
-        st.pyplot(fig2)
-
-    # Exportación
-    st.subheader("Exportación")
-    csv = df_p.to_csv(index=False).encode('utf-8')
-    st.download_button("Exportar CSV del historial", csv, file_name="historial_detecciones.csv", mime="text/csv")
-
-# --------------------- Navegación --------------------- #
-def main():
-    st.sidebar.title("Navegación")
-    pagina = st.sidebar.selectbox("Ir a", ["Registro", "Detección", "Reportes"])
-
-    if pagina == "Registro":
-        pantalla_registro()
-    elif pagina == "Detección":
-        pantalla_deteccion()
+    if df_personas.empty:
+        st.warning("No hay personas registradas.")
     else:
-        pantalla_reportes()
+        persona_sel = st.selectbox(
+            "Selecciona persona:",
+            df_personas["nombre"] + " " + df_personas["apellido"]
+        )
+        persona_id = df_personas.loc[
+            (df_personas["nombre"] + " " + df_personas["apellido"]) == persona_sel,
+            "id"
+        ].values[0]
 
-if __name__ == "__main__":
-    main()
+        df_p = df_det[df_det["persona_id"] == persona_id]
+
+        if df_p.empty:
+            st.info("No hay detecciones para esta persona.")
+        else:
+            st.subheader("📋 Tabla de detecciones")
+            st.dataframe(df_p)
+
+            st.subheader("📈 Distribución de emociones")
+            fig, ax = plt.subplots()
+            df_p["emocion"].value_counts().plot(kind="bar", ax=ax, color="skyblue")
+            ax.set_ylabel("Cantidad")
+            ax.set_xlabel("Emoción")
+            st.pyplot(fig)
+
+    conn.close()

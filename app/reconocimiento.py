@@ -24,15 +24,20 @@ def reconocer_en_tiempo_real(umbral=0.35):
         if not ret:
             break
 
-        # Detectar rostro y obtener embedding
+        # Detectar rostro
         rostro = detectar_rostro(frame)
+        emb_vec = None
         if rostro is not None:
             try:
                 emb_vec = obtener_embedding(rostro)
-            except Exception:
-                emb_vec = None
-        else:
-            emb_vec = None
+                # Dibujar rectángulo en el rostro detectado
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+                faces = face_cascade.detectMultiScale(gray, 1.1, 5)
+                for (x, y, w, h) in faces:
+                    cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
+            except Exception as e:
+                print("Error generando embedding:", e)
 
         nombre = "No registrado"
         persona_id = None
