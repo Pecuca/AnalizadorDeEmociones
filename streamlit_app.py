@@ -38,18 +38,12 @@ if opcion == "Registro":
         file_bytes = np.asarray(bytearray(img_file.read()), dtype=np.uint8)
         frame = cv2.imdecode(file_bytes, 1)
 
-        # Detectar rostro y dibujar rectángulo
+        # Detectar rostro
         rostro = detectar_rostro(frame)
         if rostro is None:
-            st.error("⚠️ No se detectó rostro en la imagen capturada.")
+            st.error("⚠️ No se detectó ningún rostro en la foto. Intenta de nuevo.")
         else:
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
-            faces = face_cascade.detectMultiScale(gray, 1.1, 5)
-            for (x, y, w, h) in faces:
-                cv2.rectangle(frame, (x, y), (x+w, y+h), (255, 0, 0), 2)
-
-            st.image(frame, channels="BGR", caption="Foto con detección de rostro")
+            st.success("✅ Se detectó un rostro en la foto capturada.")
 
             try:
                 emb_vec = obtener_embedding(rostro)
@@ -58,7 +52,7 @@ if opcion == "Registro":
                 st.success(f"🎉 Persona registrada con ID {persona_id}")
             except sqlite3.IntegrityError:
                 st.error("⚠️ Ya existe una persona registrada con ese email.")
-
+                
 # ---------------------------
 # 2. RECONOCIMIENTO (streaming simulado)
 # ---------------------------
